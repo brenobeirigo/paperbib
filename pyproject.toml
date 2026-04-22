@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=80", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "paperbib"
+version = "0.1.0"
+description = "Agent-first bibliography and one-hop citation graph extraction for literature review workflows."
+requires-python = ">=3.11"
+authors = [{ name = "Breno Beirigo" }]
+dependencies = [
+    "pymupdf>=1.25.0",
+    "requests>=2.31.0",
+    "typer>=0.12.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "responses>=0.25.0",
+]
+
+[project.scripts]
+paperbib = "paperbib.cli:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
