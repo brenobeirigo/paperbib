@@ -166,7 +166,7 @@ def test_graph_resolves_doi_url_pdf_and_text_seed_sources(tmp_path: Path) -> Non
             str(text_path),
         ],
         to=explicit_bib_path,
-        include_forward=False,
+        forward_levels=0,
         max_backward=1,
     )
 
@@ -329,6 +329,167 @@ def test_graph_dedupes_filters_and_orders_entries_deterministically(tmp_path: Pa
     assert skipped["Dataset Appendix"] == "filtered by type (misc)"
     assert report["counts"]["included_count"] == 2
     assert report["counts"]["skipped_count"] == 2
+
+
+@responses.activate
+def test_cli_graph_supports_multi_level_backward_traversal(tmp_path: Path) -> None:
+    seed = "10.7000/seed.2024.001"
+
+    responses.get(
+        "https://api.openalex.org/works/https://doi.org/10.7000/seed.2024.001",
+        json=_openalex_work(
+            "W100",
+            doi=seed,
+            title="Seed Paper",
+            year=2024,
+            authors=["Seed, Alice"],
+            referenced=["W101"],
+        ),
+        status=200,
+    )
+    responses.get(
+        "https://api.openalex.org/works/W101",
+        json=_openalex_work(
+            "W101",
+            doi="10.7000/ref.2023.002",
+            title="First Hop",
+            year=2023,
+            authors=["Hop, One"],
+            referenced=["W102"],
+        ),
+        status=200,
+    )
+    responses.get(
+        "https://api.openalex.org/works/W102",
+        json=_openalex_work(
+            "W102",
+            doi="10.7000/ref.2022.003",
+            title="Second Hop",
+            year=2022,
+            authors=["Hop, Two"],
+            referenced=[],
+        ),
+        status=200,
+    )
+    responses.get(
+        "https://api.crossref.org/works/10.7000/ref.2023.002/transform/application/x-bibtex",
+        body='@article{FirstHop,title="First Hop",doi="10.7000/ref.2023.002",year="2023",author="Hop, One"}',
+        status=200,
+    )
+    responses.get(
+        "https://api.crossref.org/works/10.7000/ref.2022.003/transform/application/x-bibtex",
+        body='@article{SecondHop,title="Second Hop",doi="10.7000/ref.2022.003",year="2022",author="Hop, Two"}',
+        status=200,
+    )
+
+    cli_result = _RUNNER.invoke(
+        app,
+        [
+            "graph",
+            seed,
+            "--to",
+            str(tmp_path),
+            "--name",
+            "multi-backward",
+            "--backward",
+            "2",
+            "--forward",
+            "0",
+            "--max-backward",
+            "1",
+            "--json",
+        ],
+    )
+
+    payload = json.loads(cli_result.output)
+    saved = (tmp_path / "multi-backward.bib").read_text(encoding="utf-8")
+    report = _read_json(tmp_path / "multi-backward.report.json")
+
+    assert cli_result.exit_code == 0
+    assert payload["entry_count"] == 2
+    assert "@article{hop2023first," in saved
+    assert "@article{hop2022second," in saved
+    assert report["counts"]["backward_count"] == 2
+    assert report["counts"]["forward_count"] == 0
+
+
+@responses.activate
+def test_graph_supports_multi_level_forward_traversal(tmp_path: Path) -> None:
+    seed = "10.8000/seed.2024.001"
+
+    responses.get(
+        "https://api.openalex.org/works/https://doi.org/10.8000/seed.2024.001",
+        json=_openalex_work(
+            "W200",
+            doi=seed,
+            title="Seed Paper",
+            year=2024,
+            authors=["Seed, Alice"],
+            referenced=[],
+        ),
+        status=200,
+    )
+    responses.get(
+        re.compile(r"https://api\.openalex\.org/works\?.*filter=cites(?::|%3A)W200.*page=1.*per-page=1"),
+        json={
+            "meta": {"count": 1, "page": 1, "per_page": 1},
+            "results": [
+                _openalex_work(
+                    "W201",
+                    doi="10.8000/citing.2023.002",
+                    title="First Forward Hop",
+                    year=2023,
+                    authors=["Forward, Fran"],
+                ),
+            ],
+        },
+        status=200,
+    )
+    responses.get(
+        re.compile(r"https://api\.openalex\.org/works\?.*filter=cites(?::|%3A)W201.*page=1.*per-page=1"),
+        json={
+            "meta": {"count": 1, "page": 1, "per_page": 1},
+            "results": [
+                _openalex_work(
+                    "W202",
+                    doi="10.8000/citing.2022.003",
+                    title="Second Forward Hop",
+                    year=2022,
+                    authors=["Forward, Finn"],
+                ),
+            ],
+        },
+        status=200,
+    )
+    responses.get(
+        "https://api.crossref.org/works/10.8000/citing.2023.002/transform/application/x-bibtex",
+        body='@article{FirstForwardHop,title="First Forward Hop",doi="10.8000/citing.2023.002",year="2023",author="Forward, Fran"}',
+        status=200,
+    )
+    responses.get(
+        "https://api.crossref.org/works/10.8000/citing.2022.003/transform/application/x-bibtex",
+        body='@article{SecondForwardHop,title="Second Forward Hop",doi="10.8000/citing.2022.003",year="2022",author="Forward, Finn"}',
+        status=200,
+    )
+
+    result = PaperBibClient().save_graph(
+        [seed],
+        to=tmp_path,
+        name="multi-forward",
+        backward_levels=0,
+        forward_levels=2,
+        max_forward=1,
+    )
+
+    saved = result.output_path.read_text(encoding="utf-8")
+    report = _read_json(tmp_path / "multi-forward.report.json")
+
+    assert result.entry_count == 2
+    assert result.backward_count == 0
+    assert result.forward_count == 2
+    assert "@article{forward2023first," in saved
+    assert "@article{forward2022second," in saved
+    assert report["counts"]["forward_count"] == 2
 
 
 @responses.activate

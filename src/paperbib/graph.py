@@ -28,7 +28,7 @@ class GraphWork:
 
 
 class OpenAlexClient:
-    """Resolve seed DOIs and expand one-hop citation graph neighbors."""
+    """Resolve seed DOIs and fetch graph neighbors for bounded citation traversal."""
 
     def __init__(
         self,

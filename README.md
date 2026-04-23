@@ -12,7 +12,7 @@ The design goal is ResearchRabbit-style discovery with deterministic, automatabl
 ## What It Does
 
 - Resolves a local PDF, local text/HTML file, DOI, or URL into a cited bibliography.
-- Expands one-hop citation graphs from seed sources through OpenAlex.
+- Expands bounded citation graphs from seed sources through OpenAlex with configurable forward and backward levels.
 - Dedupe entries DOI-first, then by normalized `title + year`.
 - Keeps heuristic-only entries out of the final `.bib` by default.
 - Preserves provenance in the report: seed sources, relation types, resolution method, skip reasons, and warnings.
@@ -21,7 +21,7 @@ The design goal is ResearchRabbit-style discovery with deterministic, automatabl
 ## What It Does Not Do
 
 - It does not bypass paywalls.
-- It does not do multi-hop citation expansion.
+- It does not do unbounded graph traversal.
 - It does not implement a keyword recommender engine.
 - It does not call external metadata sources beyond Crossref and OpenAlex in this version.
 
@@ -60,7 +60,7 @@ paperbib save ./paper.pdf --to ./artifacts/
 
 ### `paperbib graph`
 
-Use `graph` when you want one-hop discovery around seed papers, similar to a lightweight ResearchRabbit expansion.
+Use `graph` when you want bounded multi-level discovery around seed papers, similar to a lightweight ResearchRabbit expansion.
 
 Seed inputs may be:
 
@@ -74,10 +74,17 @@ The graph command can expand:
 - backward citations: papers cited by the seed
 - forward citations: papers that cite the seed
 
+Depth control:
+
+- `--backward N` traverses `N` backward levels
+- `--forward N` traverses `N` forward levels
+- `0` disables that direction
+- both default to `1`
+
 Example:
 
 ```bash
-paperbib graph 10.1234/example.2024.001 --to ./artifacts/
+paperbib graph 10.1234/example.2024.001 --to ./artifacts/ --backward 2 --forward 1
 ```
 
 ## Output Contract
@@ -211,7 +218,7 @@ https://example.org/paper
 Run:
 
 ```bash
-paperbib graph --from-file ./seeds.txt --to ./out/graph.bib
+paperbib graph --from-file ./seeds.txt --to ./out/graph.bib --backward 2 --forward 1
 ```
 
 ### 4. Precision-first graph with filters
@@ -244,15 +251,17 @@ Use this only when recall matters more than cleanliness and the agent is prepare
 - `openalex-structured`: OpenAlex metadata was converted into normalized BibTeX.
 - `heuristic`: A fallback entry was inferred from raw reference text.
 
-### Graph filters
+### Graph traversal and filters
 
-`paperbib graph` supports post-resolution filters:
+`paperbib graph` supports bounded traversal controls plus post-resolution filters:
 
+- `--backward`
+- `--forward`
 - `--year-from`
 - `--year-to`
 - repeatable `--type`
 
-Filters are applied after metadata resolution and before writing the final `.bib`. Skipped records remain visible in the report with explicit reasons.
+Traversal depth is applied during graph expansion. Year and type filters are applied after metadata resolution and before writing the final `.bib`. Skipped records remain visible in the report with explicit reasons.
 
 ### Ordering
 

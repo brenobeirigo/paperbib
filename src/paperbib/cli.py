@@ -90,27 +90,29 @@ def graph(
         "--name",
         help="Optional output filename stem when --to points to a directory.",
     ),
-    include_backward: bool = typer.Option(
-        True,
-        "--include-backward/--no-include-backward",
-        help="Include papers cited by the seed source(s).",
+    backward_levels: int = typer.Option(
+        1,
+        "--backward",
+        min=0,
+        help="Number of backward citation levels to traverse. Use 0 to disable backward expansion.",
     ),
-    include_forward: bool = typer.Option(
-        True,
-        "--include-forward/--no-include-forward",
-        help="Include papers that cite the seed source(s).",
+    forward_levels: int = typer.Option(
+        1,
+        "--forward",
+        min=0,
+        help="Number of forward citation levels to traverse. Use 0 to disable forward expansion.",
     ),
     max_backward: int | None = typer.Option(
         None,
         "--max-backward",
         min=1,
-        help="Optional cap per resolved seed for cited papers.",
+        help="Optional cap per expanded paper at each backward level.",
     ),
     max_forward: int = typer.Option(
         100,
         "--max-forward",
         min=1,
-        help="Cap per resolved seed for citing papers.",
+        help="Cap per expanded paper at each forward level.",
     ),
     year_from: int | None = typer.Option(
         None,
@@ -148,7 +150,7 @@ def graph(
         help="Emit machine-readable JSON instead of plain text.",
     ),
 ) -> None:
-    """Save a one-hop citation graph bibliography expanded from seed sources."""
+    """Save a bounded citation graph bibliography expanded from seed sources."""
     seed_sources = _collect_seed_sources(sources, from_file)
     if not seed_sources:
         typer.echo("Provide at least one seed source or --from-file input.", err=True)
@@ -160,8 +162,8 @@ def graph(
             seed_sources,
             to=to,
             name=name,
-            include_backward=include_backward,
-            include_forward=include_forward,
+            backward_levels=backward_levels,
+            forward_levels=forward_levels,
             max_backward=max_backward,
             max_forward=max_forward,
             report=report,
@@ -184,7 +186,7 @@ def status() -> None:
     typer.echo(f"paperbib {__version__}")
     typer.echo("Inputs: local PDF/text path, DOI, or HTTP(S) URL")
     typer.echo("Artifacts: .bib plus .report.json by default")
-    typer.echo("Graph mode: one-hop OpenAlex expansion from resolved seed sources")
+    typer.echo("Graph mode: bounded forward/backward OpenAlex expansion from resolved seed sources")
     typer.echo("Default policy: precision-first, heuristic entries excluded unless requested")
 
 

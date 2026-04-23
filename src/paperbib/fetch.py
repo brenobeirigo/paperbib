@@ -260,8 +260,8 @@ class PaperBibClient:
         self,
         sources: list[str],
         *,
-        include_backward: bool = True,
-        include_forward: bool = True,
+        backward_levels: int = 1,
+        forward_levels: int = 1,
         max_backward: int | None = None,
         max_forward: int | None = 100,
         include_heuristic: bool = False,
@@ -269,9 +269,12 @@ class PaperBibClient:
         year_to: int | None = None,
         entry_types: list[str] | None = None,
     ) -> BibResult:
-        if not include_backward and not include_forward:
+        if backward_levels < 0 or forward_levels < 0:
+            raise PaperBibError("Forward and backward levels must be zero or greater.")
+
+        if backward_levels == 0 and forward_levels == 0:
             raise PaperBibError(
-                "At least one of backward or forward citation expansion must be enabled."
+                "At least one of backward or forward citation expansion levels must be greater than zero."
             )
 
         normalized_sources = [str(source).strip() for source in sources if str(source).strip()]
@@ -330,52 +333,37 @@ class PaperBibClient:
         backward_keys: set[str] = set()
         forward_keys: set[str] = set()
 
-        for seed_work in seed_works:
-            seed_source_aliases = doi_aliases.get((seed_work.doi or "").lower(), {seed_work.work_id})
+        entry_cache: dict[str, ResolvedEntry | None] = {}
+        neighbor_cache: dict[tuple[str, str, int | None], list[GraphWork]] = {}
 
-            if include_backward:
-                for referenced_work in self._graph_client.get_referenced_works(
-                    seed_work,
-                    limit=max_backward,
-                ):
-                    graph_key = self._graph_work_key(referenced_work)
-                    if graph_key in seed_keys:
-                        continue
-                    backward_keys.add(graph_key)
-                    entry = self._ref_extractor.resolve_graph_work(referenced_work)
-                    if not entry:
-                        continue
-                    self._merge_candidate_record(
-                        records,
-                        by_doi,
-                        by_title_year,
-                        entry=entry,
-                        relation_type="backward",
-                        seed_sources=seed_source_aliases,
-                        connection_key=f"{seed_work.work_id.lower()}:backward",
-                    )
-
-            if include_forward:
-                for citing_work in self._graph_client.get_citing_works(
-                    seed_work,
-                    limit=max_forward,
-                ):
-                    graph_key = self._graph_work_key(citing_work)
-                    if graph_key in seed_keys:
-                        continue
-                    forward_keys.add(graph_key)
-                    entry = self._ref_extractor.resolve_graph_work(citing_work)
-                    if not entry:
-                        continue
-                    self._merge_candidate_record(
-                        records,
-                        by_doi,
-                        by_title_year,
-                        entry=entry,
-                        relation_type="forward",
-                        seed_sources=seed_source_aliases,
-                        connection_key=f"{seed_work.work_id.lower()}:forward",
-                    )
+        self._expand_graph_direction(
+            seed_works=seed_works,
+            seed_keys=seed_keys,
+            doi_aliases=doi_aliases,
+            direction="backward",
+            levels=backward_levels,
+            limit=max_backward,
+            records=records,
+            by_doi=by_doi,
+            by_title_year=by_title_year,
+            discovered_keys=backward_keys,
+            entry_cache=entry_cache,
+            neighbor_cache=neighbor_cache,
+        )
+        self._expand_graph_direction(
+            seed_works=seed_works,
+            seed_keys=seed_keys,
+            doi_aliases=doi_aliases,
+            direction="forward",
+            levels=forward_levels,
+            limit=max_forward,
+            records=records,
+            by_doi=by_doi,
+            by_title_year=by_title_year,
+            discovered_keys=forward_keys,
+            entry_cache=entry_cache,
+            neighbor_cache=neighbor_cache,
+        )
 
         if not records:
             raise PaperBibError("Could not build bibliography entries from the citation graph.")
@@ -414,8 +402,8 @@ class PaperBibClient:
         to: str | Path | None = None,
         name: str | None = None,
         *,
-        include_backward: bool = True,
-        include_forward: bool = True,
+        backward_levels: int = 1,
+        forward_levels: int = 1,
         max_backward: int | None = None,
         max_forward: int | None = 100,
         report: bool = True,
@@ -423,11 +411,11 @@ class PaperBibClient:
         year_from: int | None = None,
         year_to: int | None = None,
         entry_types: list[str] | None = None,
-    ) -> BibResult:
+        ) -> BibResult:
         result = self.resolve_graph(
             sources,
-            include_backward=include_backward,
-            include_forward=include_forward,
+            backward_levels=backward_levels,
+            forward_levels=forward_levels,
             max_backward=max_backward,
             max_forward=max_forward,
             include_heuristic=include_heuristic,
@@ -443,6 +431,121 @@ class PaperBibClient:
         )
         self._write_artifacts(result, artifact_bib_path, report=report)
         return result
+
+    def _expand_graph_direction(
+        self,
+        *,
+        seed_works: list[GraphWork],
+        seed_keys: set[str],
+        doi_aliases: dict[str, set[str]],
+        direction: str,
+        levels: int,
+        limit: int | None,
+        records: dict[str, _CandidateRecord],
+        by_doi: dict[str, str],
+        by_title_year: dict[str, str],
+        discovered_keys: set[str],
+        entry_cache: dict[str, ResolvedEntry | None],
+        neighbor_cache: dict[tuple[str, str, int | None], list[GraphWork]],
+    ) -> None:
+        if levels <= 0:
+            return
+
+        for seed_work in seed_works:
+            seed_source_aliases = doi_aliases.get((seed_work.doi or "").lower(), {seed_work.work_id})
+            frontier = [seed_work]
+            seen_frontier_keys = {self._graph_work_key(seed_work)}
+
+            for level in range(1, levels + 1):
+                next_frontier: list[GraphWork] = []
+                next_frontier_keys: set[str] = set()
+
+                for frontier_work in frontier:
+                    neighbors = self._get_graph_neighbors(
+                        frontier_work,
+                        direction=direction,
+                        limit=limit,
+                        neighbor_cache=neighbor_cache,
+                    )
+                    for neighbor in neighbors:
+                        graph_key = self._graph_work_key(neighbor)
+                        if graph_key in seed_keys:
+                            continue
+
+                        discovered_keys.add(graph_key)
+                        entry = self._resolve_cached_graph_entry(neighbor, entry_cache)
+                        if entry:
+                            self._merge_candidate_record(
+                                records,
+                                by_doi,
+                                by_title_year,
+                                entry=entry,
+                                relation_type=direction,
+                                seed_sources=seed_source_aliases,
+                                connection_key=self._graph_connection_key(
+                                    seed_work=seed_work,
+                                    frontier_work=frontier_work,
+                                    neighbor=neighbor,
+                                    direction=direction,
+                                    level=level,
+                                ),
+                            )
+
+                        if graph_key in seen_frontier_keys or graph_key in next_frontier_keys:
+                            continue
+
+                        next_frontier.append(neighbor)
+                        next_frontier_keys.add(graph_key)
+
+                if not next_frontier:
+                    break
+
+                frontier = next_frontier
+                seen_frontier_keys.update(next_frontier_keys)
+
+    def _get_graph_neighbors(
+        self,
+        work: GraphWork,
+        *,
+        direction: str,
+        limit: int | None,
+        neighbor_cache: dict[tuple[str, str, int | None], list[GraphWork]],
+    ) -> list[GraphWork]:
+        cache_key = (direction, work.work_id.lower(), limit)
+        if cache_key in neighbor_cache:
+            return neighbor_cache[cache_key]
+
+        if direction == "backward":
+            neighbors = self._graph_client.get_referenced_works(work, limit=limit)
+        else:
+            neighbors = self._graph_client.get_citing_works(work, limit=limit)
+
+        neighbor_cache[cache_key] = neighbors
+        return neighbors
+
+    def _resolve_cached_graph_entry(
+        self,
+        work: GraphWork,
+        entry_cache: dict[str, ResolvedEntry | None],
+    ) -> ResolvedEntry | None:
+        graph_key = self._graph_work_key(work)
+        if graph_key not in entry_cache:
+            entry_cache[graph_key] = self._ref_extractor.resolve_graph_work(work)
+        return entry_cache[graph_key]
+
+    @staticmethod
+    def _graph_connection_key(
+        *,
+        seed_work: GraphWork,
+        frontier_work: GraphWork,
+        neighbor: GraphWork,
+        direction: str,
+        level: int,
+    ) -> str:
+        return (
+            f"{seed_work.work_id.lower()}:{direction}:{level}:"
+            f"{frontier_work.work_id.lower()}->{neighbor.work_id.lower()}"
+        )
 
     def _extract_bibliography(
         self,
